@@ -17,7 +17,6 @@ pub fn analyze_repo(
     let repo = Repository::discover(repo_path)?;
     let oids = collect_commit_ids(&repo, max_commits)?;
 
-    // 2) run the heavy work in parallel
     let now_secs = Utc::now().timestamp();
     let paths_arc: Option<Arc<HashSet<PathBuf>>> = paths.map(Arc::new);
 
@@ -35,7 +34,6 @@ fn collect_commit_ids(
     revwalk.set_sorting(Sort::TIME)?; // newest → oldest
     revwalk.simplify_first_parent()?;
 
-    // cap the number of commits we actually gather
     let iter = revwalk.take(max_commits.unwrap_or(usize::MAX));
     iter.collect()
 }
