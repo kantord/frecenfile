@@ -7,12 +7,15 @@ use git2::{DiffOptions, Oid, Repository, Sort};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 
+/// Analyse the repository, looking at at most `max_commits` newest commits.
+/// Pass `None` to inspect the full history.
 pub fn analyze_repo(
     repo_path: &Path,
     paths: Option<HashSet<PathBuf>>,
+    max_commits: Option<usize>,
 ) -> Result<Vec<(PathBuf, f64)>, git2::Error> {
     let repo = Repository::discover(repo_path)?;
-    let oids = collect_commit_ids(&repo)?;
+    let oids = collect_commit_ids(&repo, max_commits)?;
 
     // 2) run the heavy work in parallel
     let now_secs = Utc::now().timestamp();
@@ -23,12 +26,18 @@ pub fn analyze_repo(
     Ok(scores.into_iter().collect())
 }
 
-fn collect_commit_ids(repo: &Repository) -> Result<Vec<Oid>, git2::Error> {
+fn collect_commit_ids(
+    repo: &Repository,
+    max_commits: Option<usize>,
+) -> Result<Vec<Oid>, git2::Error> {
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
     revwalk.set_sorting(Sort::TIME)?; // newest → oldest
     revwalk.simplify_first_parent()?;
-    revwalk.collect()
+
+    // cap the number of commits we actually gather
+    let iter = revwalk.take(max_commits.unwrap_or(usize::MAX));
+    iter.collect()
 }
 
 fn compute_scores_parallel(
@@ -56,7 +65,6 @@ fn process_chunk(
     now_secs: i64,
 ) -> HashMap<PathBuf, f64> {
     let repo = Repository::open(repo_path).expect("re-open repo inside worker");
-
     let mut local_scores: HashMap<PathBuf, f64> = HashMap::default();
 
     for oid in chunk {
@@ -109,3 +117,4 @@ fn process_chunk(
 
     local_scores
 }
+

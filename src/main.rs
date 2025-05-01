@@ -18,6 +18,16 @@ struct Args {
     #[arg(short, long = "paths", value_name = "PATH", num_args = 1..)]
     paths: Vec<PathBuf>,
 
+    /// Maximum number of commits to inspect (newest first). \
+    /// Use 0 for “no limit”.
+    #[arg(
+        short = 'n',
+        long = "max-commits",
+        value_name = "N",
+        default_value_t = 3000
+    )]
+    max_commits: usize,
+
     /// Sort ascending (lowest score first)
     #[arg(
         short = 'a',
@@ -45,6 +55,7 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
     if args.ascending && args.descending {
         eprintln!("Error: --ascending and --descending cannot be used together");
         process::exit(1);
@@ -56,8 +67,16 @@ fn main() -> anyhow::Result<()> {
         Some(args.paths.into_iter().collect())
     };
 
-    let mut results = analyze_repo(&args.repo, filter)?;
+    // When max_commits == 0 we process the entire commit history
+    let max_commits_opt = if args.max_commits == 0 {
+        None
+    } else {
+        Some(args.max_commits)
+    };
 
+    let mut results = analyze_repo(&args.repo, filter, max_commits_opt)?;
+
+    // Default sort: descending, unless --ascending passed.
     if args.ascending {
         results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     } else {
