@@ -1,6 +1,6 @@
 [package]
 name = "frecenfile"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "Compute frecency scores for files in a Git repository"
@@ -10,4 +10,5 @@ anyhow = "1.0.98"
 chrono = "0.4.41"
 clap = { version = "4.5.37", features = ["derive"] }
 git2 = "0.20.1"
+rustc-hash = "2.1.1"
 

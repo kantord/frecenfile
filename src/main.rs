@@ -33,6 +33,14 @@ struct Args {
         help = "Sort descending (highest score first)"
     )]
     descending: bool,
+
+    /// Print only file paths, without scores
+    #[arg(
+        short = 'P',
+        long = "path-only",
+        help = "Print only paths, omit scores"
+    )]
+    path_only: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -52,14 +60,16 @@ fn main() -> anyhow::Result<()> {
 
     if args.ascending {
         results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    } else if args.descending {
+    } else {
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     }
 
-    // Print results
-    println!("{:<10}  {}", "score", "path");
     for (path, score) in results {
-        println!("{:<10.4}  {}", score, path.display());
+        if args.path_only {
+            println!("{}", path.display());
+        } else {
+            println!("{:<10.4}  {}", score, path.display());
+        }
     }
     Ok(())
 }
