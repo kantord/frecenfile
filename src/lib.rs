@@ -7,6 +7,12 @@ use git2::{DiffOptions, Oid, Repository, Sort};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 
+fn size_penalty(size_bytes: u64) -> f64 {
+    let kib = (size_bytes as f64) / 1024.0;
+
+    1.0 / (1.0 + kib.sqrt())
+}
+
 /// Analyse the repository, looking at at most `max_commits` newest commits.
 /// Pass `None` to inspect the full history.
 pub fn analyze_repo(
@@ -63,6 +69,7 @@ fn process_chunk(
     now_secs: i64,
 ) -> HashMap<PathBuf, f64> {
     let repo = Repository::open(repo_path).expect("re-open repo inside worker");
+    let mut size_cache: HashMap<Oid, u64> = HashMap::default();
     let mut local_scores: HashMap<PathBuf, f64> = HashMap::default();
 
     for oid in chunk {
@@ -107,7 +114,19 @@ fn process_chunk(
         for delta in diff.deltas() {
             if let Some(path) = delta.new_file().path() {
                 if paths.as_ref().map_or(true, |set| set.contains(path)) {
-                    *local_scores.entry(path.to_path_buf()).or_default() += weight;
+                    let blob_oid = delta.new_file().id();
+                    if blob_oid.is_zero() {
+                        // deletion or missing
+                        continue;
+                    }
+                    let size_bytes = *size_cache.entry(blob_oid).or_insert_with(|| {
+                        repo.find_blob(blob_oid)
+                            .map(|b| b.size() as u64)
+                            .unwrap_or(0)
+                    });
+                    let penalty = size_penalty(size_bytes);
+
+                    *local_scores.entry(path.to_path_buf()).or_default() += weight * penalty;
                 }
             }
         }
@@ -115,4 +134,3 @@ fn process_chunk(
 
     local_scores
 }
-
