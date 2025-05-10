@@ -134,13 +134,14 @@ fn process_chunk(
     let mut local_scores: HashMap<PathBuf, f64> = HashMap::default();
 
     for oid in chunk {
-        let statics: CommitStatics = get_commit_statistics(&repo, *oid, &cache, &mut size_cache);
-
-        // Apply dynamic time weight & optional filter
         let commit = match repo.find_commit(*oid) {
             Ok(c) if c.parent_count() <= 1 => c,
             _ => continue,
         };
+        let statics: CommitStatics = get_commit_statistics(&repo, *oid, &cache, &mut size_cache);
+
+        // Apply dynamic time weight & optional filter
+
         let age_days = ((now_secs - commit.time().seconds()) / 86_400).max(0) as f64;
         let weight = 1.0 / (age_days + 1.0).powi(2);
 
