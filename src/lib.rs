@@ -31,19 +31,19 @@ struct CommitStatics {
 
 /// Opens (or creates) a sled cache DB unique to this repo, in OS-appropriate cache dir
 fn open_repo_cache(repo_path: &Path) -> sled::Db {
-    let proj = ProjectDirs::from("com", "YourOrg", "git_hotness")
+    let proj = ProjectDirs::from("com", "kantord", "frecenfile")
         .expect("unable to get project directories");
     let cache_base = proj.cache_dir();
     fs::create_dir_all(cache_base).expect("failed to create cache directory");
 
-    let abs = repo_path
+    let absolute_path = repo_path
         .canonicalize()
         .expect("failed to canonicalize repo path");
     let mut hasher = Sha256::new();
-    hasher.update(abs.to_string_lossy().as_bytes());
-    let hash = hex::encode(&hasher.finalize()[0..16]);
+    hasher.update(absolute_path.to_string_lossy().as_bytes());
+    let path_hash = hex::encode(&hasher.finalize()[0..16]);
 
-    let db_path = cache_base.join(format!("{}.sled", hash));
+    let db_path = cache_base.join(format!("{}.sled", path_hash));
     sled::open(db_path).expect("failed to open sled cache")
 }
 
@@ -139,9 +139,6 @@ fn process_chunk(
             _ => continue,
         };
         let statics: CommitStatics = get_commit_statistics(&repo, *oid, &cache, &mut size_cache);
-
-        // Apply dynamic time weight & optional filter
-
         let age_days = ((now_secs - commit.time().seconds()) / 86_400).max(0) as f64;
         let weight = 1.0 / (age_days + 1.0).powi(2);
 
