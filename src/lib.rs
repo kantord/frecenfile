@@ -102,6 +102,25 @@ fn compute_scores_parallel(
         })
 }
 
+fn get_commit_statistics(
+    repo: &Repository,
+    oid: Oid,
+    cache: &Arc<sled::Db>,
+    size_cache: &mut HashMap<Oid, u64>,
+) -> CommitStatics {
+    let key = oid.to_string();
+
+    if let Ok(Some(bytes)) = cache.get(&key) {
+        return bincode::deserialize(&bytes).expect("deserialize cache bytes");
+    } else {
+        let contribs = compute_statics_for_commit(&repo, oid, size_cache).unwrap_or_default();
+        let statics = CommitStatics { contribs };
+        let serialized = bincode::serialize(&statics).expect("serialize statics");
+        cache.insert(&key, serialized).expect("insert into cache");
+        return statics;
+    };
+}
+
 /// Worker: for each OID, load from cache or compute, then filter & weight
 fn process_chunk(
     chunk: &[Oid],
@@ -115,19 +134,7 @@ fn process_chunk(
     let mut local_scores: HashMap<PathBuf, f64> = HashMap::default();
 
     for oid in chunk {
-        let key = oid.to_string();
-
-        // Load or compute statics
-        let statics: CommitStatics = if let Ok(Some(bytes)) = cache.get(&key) {
-            bincode::deserialize(&bytes).expect("deserialize cache bytes")
-        } else {
-            let contribs =
-                compute_statics_for_commit(&repo, *oid, &mut size_cache).unwrap_or_default();
-            let statics = CommitStatics { contribs };
-            let serialized = bincode::serialize(&statics).expect("serialize statics");
-            cache.insert(&key, serialized).expect("insert into cache");
-            statics
-        };
+        let statics: CommitStatics = get_commit_statistics(&repo, *oid, &cache, &mut size_cache);
 
         // Apply dynamic time weight & optional filter
         let commit = match repo.find_commit(*oid) {
