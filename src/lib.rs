@@ -268,6 +268,7 @@ mod tests {
             Self { key, old }
         }
 
+        #[cfg(unix)]
         fn remove(key: &'static str) -> Self {
             let old = env::var_os(key);
             unsafe {
@@ -350,6 +351,19 @@ mod tests {
         let _guard_xdg = EnvGuard::set("XDG_CACHE_HOME", xdg_dir.as_os_str());
         let _guard_cache = EnvGuard::remove(CACHE_ENV_VAR);
 
+        let result = analyze_repo(&repo_dir, None, Some(10));
+        assert!(result.is_ok(), "expected analyze_repo to succeed");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn invalid_cache_dir_falls_back() {
+        let repo_dir = make_git_repo();
+        let tmp_dir = make_temp_dir("frecenfile_cache_parent");
+        let cache_file = tmp_dir.join("not_a_dir");
+        fs::write(&cache_file, "not a dir").expect("write cache file");
+
+        let _guard = EnvGuard::set(CACHE_ENV_VAR, cache_file.as_os_str());
         let result = analyze_repo(&repo_dir, None, Some(10));
         assert!(result.is_ok(), "expected analyze_repo to succeed");
     }
