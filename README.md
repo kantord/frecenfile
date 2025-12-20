@@ -13,6 +13,12 @@ the Linux repository takes just around a second.
 
 For most purposes, the results should be easily cacheable.
 
+## Cache
+
+**frecenfile** stores a per-repo cache in the OS cache directory. You can override the location
+with `FRECENFILE_CACHE_DIR`. If the cache directory is not writable, frecenfile falls back to a
+temporary cache or no-cache mode instead of failing.
+
 ## Git history
 
 By default, **frecenfile** processes the last 3000 commits, but this can be modified using the `--max-commits`
