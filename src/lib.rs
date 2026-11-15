@@ -1,22 +1,18 @@
 use std::collections::HashSet;
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::Result;
-use bincode;
 use chrono::Utc;
 use directories::ProjectDirs;
 use git2::{DiffOptions, Oid, Repository, Sort};
-use hex;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sled;
 
 const CACHE_ENV_VAR: &str = "FRECENFILE_CACHE_DIR";
 
@@ -27,50 +23,74 @@ fn size_penalty(size_bytes: u64) -> f64 {
 }
 
 /// On-disk static data per commit: per-file penalties
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct CommitStatics {
     contribs: Vec<(PathBuf, f64)>,
 }
 
+/// Per-repo cache: commit id -> statics. Loaded from one JSON file, written back by `save`.
 #[derive(Default)]
 struct Cache {
-    db: Option<sled::Db>,
+    path: Option<PathBuf>,
+    entries: Mutex<HashMap<String, CommitStatics>>,
 }
 
 impl Cache {
-    fn new(db: Option<sled::Db>) -> Self {
-        Self { db }
+    fn load(path: Option<PathBuf>) -> Self {
+        let entries = path
+            .as_ref()
+            .and_then(|p| fs::read(p).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            path,
+            entries: Mutex::new(entries),
+        }
     }
 
-    fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let bytes = self.db.as_ref()?.get(key).ok()??;
-        Some(bytes.to_vec())
+    fn get(&self, key: &str) -> Option<CommitStatics> {
+        self.entries.lock().ok()?.get(key).cloned()
     }
 
-    fn insert(&self, key: &str, value: Vec<u8>) {
-        if let Some(db) = &self.db {
-            let _ = db.insert(key, value);
+    fn insert(&self, key: String, value: CommitStatics) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(key, value);
+        }
+    }
+
+    /// Best-effort atomic write; failures only cost us the cache.
+    fn save(&self) {
+        let Some(path) = &self.path else { return };
+        let Ok(entries) = self.entries.lock() else {
+            return;
+        };
+        let Ok(bytes) = serde_json::to_vec(&*entries) else {
+            return;
+        };
+        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        if fs::write(&tmp, bytes).is_err() || fs::rename(&tmp, path).is_err() {
+            let _ = fs::remove_file(&tmp);
         }
     }
 }
 
-/// Opens (or creates) a sled cache DB unique to this repo, in OS-appropriate cache dir.
+/// Opens a cache file unique to this repo, in OS-appropriate cache dir.
 /// Falls back to temp or no-cache if the directory is not writable.
 fn open_repo_cache(repo_path: &Path) -> Cache {
     let cache_base = cache_base_from_env().or_else(default_cache_base);
-    if let Some(base) = cache_base {
-        if let Some(db) = open_cache_db_at(repo_path, &base) {
-            return Cache::new(Some(db));
-        }
+    if let Some(base) = cache_base
+        && let Some(path) = cache_file_at(repo_path, &base)
+    {
+        return Cache::load(Some(path));
     }
 
-    if let Some(base) = temp_cache_base() {
-        if let Some(db) = open_cache_db_at(repo_path, &base) {
-            return Cache::new(Some(db));
-        }
+    if let Some(base) = temp_cache_base()
+        && let Some(path) = cache_file_at(repo_path, &base)
+    {
+        return Cache::load(Some(path));
     }
 
-    Cache::new(None)
+    Cache::default()
 }
 
 fn cache_base_from_env() -> Option<PathBuf> {
@@ -85,12 +105,9 @@ fn temp_cache_base() -> Option<PathBuf> {
     Some(env::temp_dir().join("frecenfile"))
 }
 
-fn open_cache_db_at(repo_path: &Path, cache_base: &Path) -> Option<sled::Db> {
-    if fs::create_dir_all(cache_base).is_err() {
-        return None;
-    }
-    let db_path = repo_cache_path(cache_base, repo_path);
-    sled::open(db_path).ok()
+fn cache_file_at(repo_path: &Path, cache_base: &Path) -> Option<PathBuf> {
+    fs::create_dir_all(cache_base).ok()?;
+    Some(repo_cache_path(cache_base, repo_path))
 }
 
 fn repo_cache_path(cache_base: &Path, repo_path: &Path) -> PathBuf {
@@ -100,7 +117,7 @@ fn repo_cache_path(cache_base: &Path, repo_path: &Path) -> PathBuf {
     let mut hasher = Sha256::new();
     hasher.update(absolute_path.to_string_lossy().as_bytes());
     let path_hash = hex::encode(&hasher.finalize()[0..16]);
-    cache_base.join(format!("{}.sled", path_hash))
+    cache_base.join(format!("{}.json", path_hash))
 }
 
 /// Top-level: analyze repo at `repo_path`, optional filter paths, limit to max_commits newest commits
@@ -115,7 +132,8 @@ pub fn analyze_repo(
     let now_secs = Utc::now().timestamp();
     let paths_arc = paths.map(Arc::new);
 
-    let scores = compute_scores_parallel(&oids, repo_path, &paths_arc, now_secs, cache);
+    let scores = compute_scores_parallel(&oids, repo_path, &paths_arc, now_secs, cache.clone());
+    cache.save();
     Ok(scores.into_iter().collect())
 }
 
@@ -166,14 +184,13 @@ fn get_commit_statistics(
 ) -> CommitStatics {
     let key = oid.to_string();
 
-    if let Some(bytes) = cache.get(&key) {
-        return bincode::deserialize(&bytes).expect("deserialize cache bytes");
+    if let Some(statics) = cache.get(&key) {
+        return statics;
     }
 
-    let contribs = compute_statics_for_commit(&repo, oid, size_cache).unwrap_or_default();
+    let contribs = compute_statics_for_commit(repo, oid, size_cache).unwrap_or_default();
     let statics = CommitStatics { contribs };
-    let serialized = bincode::serialize(&statics).expect("serialize statics");
-    cache.insert(&key, serialized);
+    cache.insert(key, statics.clone());
     statics
 }
 
@@ -199,7 +216,7 @@ fn process_chunk(
         let weight = 1.0 / (age_days + 1.0).powi(2);
 
         for (path, penalty) in statics.contribs.into_iter() {
-            if paths.as_ref().map_or(true, |set| set.contains(&path)) {
+            if paths.as_ref().is_none_or(|set| set.contains(&path)) {
                 *local_scores.entry(path).or_default() += penalty * weight;
             }
         }
@@ -253,6 +270,9 @@ fn compute_statics_for_commit(
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    /// Tests mutate process-wide env vars, so they must not run concurrently.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         key: &'static str,
@@ -321,13 +341,14 @@ mod tests {
 
     #[test]
     fn cache_env_override_is_used() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let repo_dir = make_git_repo();
         let cache_dir = make_temp_dir("frecenfile_cache");
         let _guard = EnvGuard::set(CACHE_ENV_VAR, cache_dir.as_os_str());
-        let _cache = open_repo_cache(&repo_dir);
+        analyze_repo(&repo_dir, None, Some(10)).expect("analyze");
 
         let expected = repo_cache_path(&cache_dir, &repo_dir);
-        assert!(expected.exists(), "expected cache path to exist");
+        assert!(expected.exists(), "expected cache file to exist");
     }
 
     #[cfg(unix)]
@@ -340,6 +361,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn read_only_home_does_not_panic() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let repo_dir = make_git_repo();
         let home_dir = make_temp_dir("frecenfile_home");
         let xdg_dir = home_dir.join("xdg_cache");

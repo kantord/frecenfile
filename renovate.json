@@ -2,5 +2,12 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "bincode 3.x is a compile_error tombstone release",
+      "matchPackageNames": ["bincode"],
+      "enabled": false
+    }
   ]
 }
